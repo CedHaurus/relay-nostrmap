@@ -15,6 +15,7 @@ Ce relay fait partie du projet [nostrmap.fr](https://nostrmap.fr), une initiativ
 - Filtrage anti-spam par politique (write policy Python)
 - Compression WebSocket activée (permessage-deflate)
 - TLS via Caddy (certificat Let's Encrypt automatique)
+- **Pas de logs d'IP** — les adresses IP sont anonymisées dans les logs Caddy (masque /24 IPv4, /48 IPv6)
 
 ## Contact
 
@@ -25,7 +26,7 @@ Ce relay fait partie du projet [nostrmap.fr](https://nostrmap.fr), une initiativ
 - **[strfry](https://github.com/hoytech/strfry)** — relay Nostr haute performance (C++, LMDB)
 - **[Caddy v2](https://caddyserver.com/)** — reverse proxy TLS automatique
 - **Docker Compose** — orchestration des services
-- **Python** — write policy, monitoring, publication de stats
+- **Python** — write policy, monitoring
 
 ## Ce dépôt
 
@@ -38,11 +39,10 @@ Les fichiers sensibles (clés, IP du serveur) ne sont pas inclus.
 | Fichier | Description |
 |---|---|
 | `strfry.conf` | Configuration du relay strfry |
-| `Caddyfile` | Configuration Caddy (reverse proxy) |
+| `Caddyfile` | Configuration Caddy (reverse proxy + anonymisation IP) |
 | `docker-compose.yml` | Stack Docker |
 | `policy.py` | Write policy (filtrage des événements) |
-| `monitor/stats.py` | Publication quotidienne des stats (kind:1) |
-| `monitor/monitor.py` | Monitoring via DMs Nostr chiffrés (NIP-04) |
+| `monitor/monitor.py` | Monitoring et alertes opérateur |
 
 ## Lancer votre propre relay
 

@@ -143,19 +143,51 @@ apt install -y iptables-persistent
 iptables-save > /etc/iptables/rules.v4
 ```
 
-## 6. Monitoring (optionnel)
+## 6. Anonymisation des IPs
 
-Le dossier `monitor/` contient deux scripts Python :
+Par défaut Caddy logue les IPs complètes des clients. Pour un relay public respectueux de la vie privée, on peut les tronquer directement dans la config :
+
+```caddy
+log {
+    format filter {
+        wrap json
+        fields {
+            request>remote_ip ip_mask {
+                ipv4 24    # garde seulement x.x.x.0
+                ipv6 48    # garde seulement les 48 premiers bits
+            }
+            request>client_ip ip_mask {
+                ipv4 24
+                ipv6 48
+            }
+        }
+    }
+}
+```
+
+Le `Caddyfile` de ce dépôt inclut déjà cette configuration. Les logs ne contiennent jamais d'IP complète — impossible de retracer un utilisateur individuel.
+
+Pour désactiver complètement les logs :
+
+```caddy
+relay.votre-domaine.net {
+    reverse_proxy 127.0.0.1:7777
+    # pas de bloc log = aucun log d'accès
+}
+```
+
+## 7. Monitoring (optionnel)
+
+Le dossier `monitor/` contient un script Python :
 
 - `monitor.py` — envoie des rapports et alertes en DM Nostr chiffré (NIP-04)
-- `stats.py` — publie une note kind:1 publique avec les stats du relay
 
 ### Installation
 
 ```bash
 pip3 install pynostr --break-system-packages
 mkdir -p /etc/strfry/monitor
-cp monitor/monitor.py monitor/stats.py /etc/strfry/monitor/
+cp monitor/monitor.py /etc/strfry/monitor/
 
 # Créer keys.json avec les clés Nostr du relay
 cat > /etc/strfry/monitor/keys.json << 'EOF'
@@ -176,12 +208,9 @@ chmod 600 /etc/strfry/monitor/keys.json
 
 # Alertes toutes les 5 minutes
 */5 * * * * /usr/bin/python3 /etc/strfry/monitor/monitor.py alert >> /var/log/strfry-monitor.log 2>&1
-
-# Stats publiques quotidiennes (8h UTC)
-0 8 * * * /usr/bin/python3 /etc/strfry/monitor/stats.py >> /var/log/strfry-stats.log 2>&1
 ```
 
-## 7. Annoncer son relay
+## 8. Annoncer son relay
 
 - [nostr.watch](https://nostr.watch) — annuaire de relays
 - [relay.tools](https://relay.tools) — listing communautaire
