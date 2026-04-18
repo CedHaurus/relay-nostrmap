@@ -1,0 +1,40 @@
+services:
+
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    # network_mode: host est nécessaire pour que Caddy voie les vraies IPs clients
+    # et pour qu'il puisse atteindre strfry via 127.0.0.1
+    network_mode: host
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+      - /var/log/caddy:/var/log/caddy
+
+  strfry:
+    build: ./strfry
+    image: strfry-local:latest
+    container_name: strfry
+    restart: unless-stopped
+    # network_mode: host nécessaire pour que realIpHeader soit honnoré par Caddy
+    network_mode: host
+    volumes:
+      - ./strfry/strfry.conf:/etc/strfry/strfry.conf:ro
+      - ./strfry/policy.py:/etc/strfry/policy.py:ro
+      - ./strfry/blocklist.txt:/etc/strfry/blocklist.txt
+      - ./strfry/data:/var/lib/strfry
+
+  # Ajouter de nouveaux services ici
+  # Avec network_mode: host sur Caddy, référencer les services via leur port publié :
+  #
+  # mon-service:
+  #   image: mon-image
+  #   container_name: mon-service
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:8080:8080"
+  #
+  # Puis dans Caddyfile :
+  #   mon-domaine.fr { reverse_proxy 127.0.0.1:8080 }

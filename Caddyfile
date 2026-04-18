@@ -1,0 +1,37 @@
+relay.votre-domaine.net {
+    reverse_proxy 127.0.0.1:7777 {
+        # Transmet la vraie IP client à strfry
+        header_up X-Real-Ip {http.request.remote.host}
+    }
+
+    request_body {
+        max_size 128KB
+    }
+
+    log {
+        output file /var/log/caddy/relay-access.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+        format filter {
+            wrap json
+            fields {
+                # Anonymisation partielle des IPs dans les logs
+                request>remote_ip ip_mask {
+                    ipv4 24
+                    ipv6 48
+                }
+                request>client_ip ip_mask {
+                    ipv4 24
+                    ipv6 48
+                }
+            }
+        }
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        -Server
+    }
+}
