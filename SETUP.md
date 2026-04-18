@@ -180,7 +180,7 @@ relay.votre-domaine.net {
 
 Le dossier `monitor/` contient un script Python :
 
-- `monitor.py` — envoie des rapports et alertes en DM Nostr chiffré (NIP-04)
+- `monitor.py` — envoie des rapports et alertes à l'opérateur
 
 ### Installation
 
