@@ -42,7 +42,6 @@ Les fichiers sensibles (clés, IP du serveur) ne sont pas inclus.
 | `Caddyfile` | Configuration Caddy (reverse proxy + anonymisation IP) |
 | `docker-compose.yml` | Stack Docker |
 | `policy.py` | Write policy (filtrage des événements) |
-| `monitor/monitor.py` | Monitoring et alertes opérateur |
 
 ## Lancer votre propre relay
 
