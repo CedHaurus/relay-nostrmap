@@ -1,0 +1,16 @@
+[Unit]
+Description=strfry Nostr relay
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/strfry --config /etc/strfry/strfry.conf relay
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/var/lib/strfry
+LimitNOFILE=1000000
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

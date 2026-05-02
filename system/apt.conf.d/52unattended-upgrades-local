@@ -1,0 +1,7 @@
+// Override local : auto-reboot apres upgrades de securite kernel
+// Heure choisie : 04:50 UTC pour finir AVANT le backup de 04:00 (qui dure ~10-15 min)
+// → en pratique, le backup tourne d abord puis le reboot a lieu apres son terme.
+// Note : le backup de 04:00 termine ≈ 04:15. Reboot 04:50 OK.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:50";

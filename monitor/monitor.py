@@ -2,7 +2,7 @@
 """
 Nostr Map Relay — Système de monitoring
 Envoie des rapports et alertes en DM Nostr chiffré (NIP-04)
-Adapté pour stack Docker sur /opt/docker/
+Adapté pour stack native systemd (strfry binaire + DB /var/lib/strfry/)
 """
 
 import os
@@ -36,7 +36,7 @@ DM_RELAYS = [
     "wss://nos.lol",
 ]
 
-STRFRY_DB   = "/opt/docker/strfry/data/"
+STRFRY_DB   = "/var/lib/strfry/"
 CADDY_LOG   = "/var/log/caddy/relay-access.log"
 STRFRY_CONF = "/etc/strfry/strfry.conf"
 
@@ -60,8 +60,12 @@ ALERT_COOLDOWN = {
     "reject_warn":  3600,
     "flood":        3600,
     "restarts":     1800,
+    "oom":          1800,
+    "isolated":     3600,
     "tls_warn":     86400,
     "ssh_brute":    3600,
+    "fail2ban":     3600,
+    "backup":       21600,
 }
 
 # ─── Utilitaires ──────────────────────────────────────────────────────────────
@@ -219,14 +223,14 @@ def get_load():
     return round(psutil.getloadavg()[0], 2)
 
 def get_container_status(name):
-    """Vérifie si un container Docker est running."""
-    out = run(f"docker inspect --format='{{{{.State.Running}}}}' {name} 2>/dev/null")
-    return out.strip("'") == "true"
+    """Vérifie si l'unité systemd est active (stack bare metal)."""
+    rc = subprocess.call(["systemctl", "is-active", "--quiet", name])
+    return rc == 0
 
 def get_container_restarts(name):
-    out = run(f"docker inspect --format='{{{{.RestartCount}}}}' {name} 2>/dev/null")
+    out = run(f"systemctl show -p NRestarts --value {name}")
     try:
-        return int(out.strip("'"))
+        return int(out)
     except ValueError:
         return 0
 
@@ -239,26 +243,38 @@ def get_connections():
         return 0
 
 def get_events_count():
-    """Nombre d'events dans la DB strfry via docker exec."""
-    out = run("docker exec strfry strfry --config /etc/strfry/strfry.conf scan '{}' 2>/dev/null | wc -l")
+    """Nombre d'events dans la DB strfry (binaire local)."""
+    out = run("/usr/local/bin/strfry --config /etc/strfry/strfry.conf scan '{}' 2>/dev/null | wc -l")
     try:
         return int(out)
     except ValueError:
         return -1
 
 def get_reject_rate():
-    """Taux de rejet depuis les logs Docker strfry sur 12h."""
-    logs = run("docker logs strfry --since 12h 2>&1")
-    accepted = logs.count("accepted")
-    rejected = logs.count("rejected")
-    total = accepted + rejected
+    """Taux de rejet abusif depuis journalctl strfry sur 1h.
+    Filtre cote journald (--grep) pour eviter de scanner tout le log.
+    Compte 'Inserted event' = accepte. Exclut les rejets NORMAUX strfry
+    (ephemeral expired, duplicate, replaced) qui ne sont pas du spam."""
+    accepted = run(
+        "journalctl -u strfry --since '1h ago' --no-pager --grep 'Inserted event' 2>/dev/null | wc -l"
+    )
+    rejected = run(
+        "journalctl -u strfry --since '1h ago' --no-pager --grep 'Rejected' 2>/dev/null "
+        "| grep -vE 'ephemeral event expired|duplicate: have this event|replaced: have newer event' "
+        "| wc -l"
+    )
+    try:
+        a = int(accepted); r = int(rejected)
+    except ValueError:
+        return 0
+    total = a + r
     if total == 0:
         return 0
-    return round(rejected / total * 100, 1)
+    return round(r / total * 100, 1)
 
 def get_top_pubkeys(n=5):
     """Top N pubkeys actives sur 12h depuis les logs strfry."""
-    logs = run("docker logs strfry --since 12h 2>&1")
+    logs = run("journalctl -u strfry --since '12h ago' --no-pager 2>/dev/null")
     from collections import Counter
     import re
     pubkeys = re.findall(r'pubkey["\s:]+([0-9a-f]{64})', logs)
@@ -273,6 +289,35 @@ def get_ssh_failures():
         return int(out)
     except ValueError:
         return 0
+
+def get_recent_inserts(window_minutes: int = 15):
+    """Compte les events 'Inserted event' dans les N dernieres minutes."""
+    out = run(
+        f"journalctl -u strfry --since '{window_minutes}min ago' --no-pager 2>/dev/null "
+        f"| grep -c 'Inserted event'"
+    )
+    try:
+        return int(out)
+    except ValueError:
+        return 0
+
+def get_last_backup_status():
+    """Retourne (heures_depuis_dernier_backup_ok, ok_bool).
+    Lit /var/log/server-backup.log pour 'FIN BACKUP OK'."""
+    out = run("grep 'FIN BACKUP OK' /var/log/server-backup.log 2>/dev/null | tail -1")
+    if not out:
+        return (-1, False)
+    # Format: [2026-05-02 04:01:21] === FIN BACKUP OK ===
+    import re
+    m = re.search(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', out)
+    if not m:
+        return (-1, False)
+    try:
+        last = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        delta_hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+        return (round(delta_hours, 1), True)
+    except Exception:
+        return (-1, False)
 
 def get_tls_expiry():
     out = run(
@@ -363,7 +408,7 @@ def check_alerts(state, keys):
 
     # strfry down
     if not get_container_status("strfry") and cooldown_ok(state, "strfry_down"):
-        logs = run("docker logs strfry --tail 20 2>&1")
+        logs = run("journalctl -u strfry --no-pager -n 20 2>&1")
         send_dm(f"🚨 ALERTE : strfry est DOWN\n\nDerniers logs :\n{logs[-800:]}", keys)
         mark_alert_sent(state, "strfry_down")
         alerts_sent += 1
@@ -416,14 +461,29 @@ def check_alerts(state, keys):
         alerts_sent += 1
 
     # Redémarrages inattendus strfry
-    restarts_now = get_container_restarts("strfry")
-    restarts_last = state.get("restarts_strfry_last", restarts_now)
-    if restarts_now > restarts_last and cooldown_ok(state, "restarts"):
-        diff = restarts_now - restarts_last
-        logs = run("docker logs strfry --tail 15 2>&1")
-        send_dm(f"⚠️ strfry a redémarré {diff} fois\n\nDerniers logs :\n{logs[-500:]}", keys)
+    # NRestarts (systemd) est peu fiable car remis a 0 par certains kills externes.
+    # On utilise journalctl + count des "Started strfry.service" sur 1h, soustrait 1 pour le 1er start.
+    starts_1h = run("journalctl -u strfry --since '1h ago' --no-pager 2>/dev/null | grep -c 'Started strfry.service'")
+    try:
+        starts_1h = max(0, int(starts_1h) - 1)
+    except ValueError:
+        starts_1h = 0
+    if starts_1h >= 1 and cooldown_ok(state, "restarts"):
+        logs = run("journalctl -u strfry --no-pager -n 15 2>&1")
+        send_dm(f"⚠️ strfry a redémarré {starts_1h} fois sur la dernière heure\n\nDerniers logs :\n{logs[-500:]}", keys)
         mark_alert_sent(state, "restarts")
-        state["restarts_strfry_last"] = restarts_now
+        alerts_sent += 1
+
+    # OOM-kill du processus strfry (kernel)
+    # Le kernel logue 'Out of memory: Killed process ... (strfry)' sur OOM global.
+    oom_count = run("journalctl -k --since '15m ago' --no-pager 2>/dev/null | grep -c 'Killed process.*(strfry)'")
+    try:
+        oom_count = int(oom_count)
+    except ValueError:
+        oom_count = 0
+    if oom_count > 0 and cooldown_ok(state, "oom"):
+        send_dm(f"🚨 OOM-KILL : strfry a été tué par le kernel {oom_count} fois sur 15 min.\nLa RAM systeme est saturee. Verifier MemoryHigh/MemoryMax + swap.", keys)
+        mark_alert_sent(state, "oom")
         alerts_sent += 1
 
     # TLS expiration
@@ -438,6 +498,37 @@ def check_alerts(state, keys):
     if ssh_fail >= SSH_BRUTE_WARN and cooldown_ok(state, "ssh_brute"):
         send_dm(f"🚨 {ssh_fail} tentatives SSH échouées en 1h — brute force en cours", keys)
         mark_alert_sent(state, "ssh_brute")
+        alerts_sent += 1
+
+    # Relay isole : strfry actif mais ne recoit RIEN (events stagnants ET 0 conn)
+    # Symptome : DNS cassé, IP bannie ailleurs, route reseau perdue, etc.
+    if get_container_status("strfry"):
+        recent_inserts = get_recent_inserts(window_minutes=15)
+        conns = get_connections()
+        if recent_inserts == 0 and conns == 0 and cooldown_ok(state, "isolated"):
+            send_dm(
+                "🚨 RELAY ISOLE : strfry actif mais 0 events reçus et 0 connexions "
+                "sur 15 min. Verifier DNS, firewall, route reseau, IP non bannie ailleurs.",
+                keys,
+            )
+            mark_alert_sent(state, "isolated")
+            alerts_sent += 1
+
+    # fail2ban down
+    if not get_container_status("fail2ban") and cooldown_ok(state, "fail2ban"):
+        send_dm("⚠️ fail2ban est DOWN — protection brute-force inactive", keys)
+        mark_alert_sent(state, "fail2ban")
+        alerts_sent += 1
+
+    # Backup vieillissant : pas de "FIN BACKUP OK" depuis > 25h
+    backup_age, backup_ok = get_last_backup_status()
+    if backup_ok and backup_age > 25 and cooldown_ok(state, "backup"):
+        send_dm(
+            f"⚠️ Aucun backup réussi depuis {backup_age}h. "
+            f"Verifier /var/log/server-backup.log et le cron /etc/cron.d/server-backup.",
+            keys,
+        )
+        mark_alert_sent(state, "backup")
         alerts_sent += 1
 
     if alerts_sent == 0:

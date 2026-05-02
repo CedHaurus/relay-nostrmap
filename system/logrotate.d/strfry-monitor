@@ -1,0 +1,10 @@
+/var/log/strfry-monitor.log /var/log/server-backup.log {
+    su root adm
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

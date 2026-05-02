@@ -1,12 +1,7 @@
-relay.votre-domaine.net {
-    reverse_proxy 127.0.0.1:7777 {
-        # Transmet la vraie IP client à strfry
-        header_up X-Real-Ip {http.request.remote.host}
-    }
+relay.nostrmap.net {
+    encode gzip zstd
 
-    request_body {
-        max_size 128KB
-    }
+    reverse_proxy 127.0.0.1:7777
 
     log {
         output file /var/log/caddy/relay-access.log {
@@ -16,7 +11,6 @@ relay.votre-domaine.net {
         format filter {
             wrap json
             fields {
-                # Anonymisation partielle des IPs dans les logs
                 request>remote_ip ip_mask {
                     ipv4 24
                     ipv6 48
@@ -30,8 +24,11 @@ relay.votre-domaine.net {
     }
 
     header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "interest-cohort=()"
         -Server
     }
 }

@@ -1,0 +1,5 @@
+0 3 * * * flock -n /var/run/strfry-retention.lock timeout 600 /etc/strfry/retention.sh >> /var/log/strfry-monitor.log 2>&1
+0 */6 * * * flock -n /var/run/strfry-blocklist-update.lock timeout 120 /etc/strfry/update-blocklist.sh >> /var/log/strfry-monitor.log 2>&1
+0 6,18 * * * flock -n /var/run/strfry-monitor.lock timeout 240 python3 /etc/strfry/monitor/monitor.py report >> /var/log/strfry-monitor.log 2>&1
+*/5 * * * * flock -n /var/run/strfry-monitor.lock timeout 240 python3 /etc/strfry/monitor/monitor.py alert >> /var/log/strfry-monitor.log 2>&1
+0 12 * * * flock -n /var/run/strfry-monitor.lock timeout 240 python3 /etc/strfry/monitor/stats.py >> /var/log/strfry-monitor.log 2>&1

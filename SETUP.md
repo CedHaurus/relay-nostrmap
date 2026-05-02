@@ -1,221 +1,183 @@
-# Guide d'installation — relay strfry sur VPS
+# SETUP.md — Installation complète du relay strfry
 
-Ce guide décrit comment déployer un relay Nostr strfry sur un VPS Ubuntu 24.04 avec Caddy comme reverse proxy.
+Ce guide décrit comment déployer un relay Nostr strfry sur un VPS Ubuntu 24.04 avec Caddy comme reverse proxy, en stack **native systemd** (sans Docker).
 
 ## Prérequis
 
-- VPS Ubuntu 22.04 ou 24.04 (2 vCPU, 4 GB RAM minimum)
-- Un nom de domaine pointant sur le VPS
-- Docker et Docker Compose installés
-- Python 3.10+
+- VPS Ubuntu 24.04 LTS (4 vCPU / 8 Go RAM / 80+ Go disque recommandés)
+- Un nom de domaine pointant sur le VPS (A et AAAA records)
+- Accès root SSH
 
 ## 1. Compiler strfry depuis les sources
 
 ```bash
-# Dépendances
-apt update && apt install -y git build-essential cmake libssl-dev \
-  zlib1g-dev liblmdb-dev libflatbuffers-dev libsecp256k1-dev \
-  libzstd-dev pkg-config
+apt update && apt install -y \
+    git build-essential libssl-dev zlib1g-dev liblmdb-dev \
+    libflatbuffers-dev libsecp256k1-dev libzstd-dev \
+    pkg-config libtool ca-certificates curl
 
-# Cloner et compiler
 git clone https://github.com/hoytech/strfry.git /opt/strfry
 cd /opt/strfry
 git submodule update --init
 make setup-golpe
 make -j$(nproc)
+install -m 755 strfry /usr/local/bin/strfry
+/usr/local/bin/strfry --version
 ```
 
-## 2. Structure Docker
-
-```
-/opt/docker/
-├── docker-compose.yml
-├── caddy/
-│   ├── Caddyfile
-│   ├── data/          # certificats TLS (persisté)
-│   └── config/
-└── strfry/
-    ├── Dockerfile
-    ├── strfry.conf
-    ├── policy.py
-    ├── blocklist.txt
-    └── data/          # base LMDB (persistée)
-```
-
-### Dockerfile strfry
-
-```dockerfile
-FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y \
-    libssl3 zlib1g liblmdb0 libsecp256k1-2 libzstd1 \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=build /opt/strfry/strfry /usr/local/bin/strfry
-COPY policy.py /etc/strfry/policy.py
-COPY blocklist.txt /etc/strfry/blocklist.txt
-CMD ["strfry", "--config", "/etc/strfry/strfry.conf", "relay"]
-```
-
-> **Note** : buildez l'image depuis les sources compilées ou copiez le binaire strfry dans `./strfry/`.
-
-## 3. Configuration
-
-Copiez et adaptez les fichiers de ce dépôt :
+## 2. Installer Caddy v2 + autres paquets
 
 ```bash
-# Adapter le domaine dans Caddyfile
-sed -i 's/relay.votre-domaine.net/relay.mon-domaine.fr/g' Caddyfile
-
-# Adapter le nom et la description dans strfry.conf
-# Générer vos clés Nostr (npub/nsec) avec un outil comme nak ou nostr-keygen
+apt install -y caddy fail2ban ufw restic \
+    python3-pip python3-pynostr python3-psutil
+# Si python3-pynostr indispo :
+# pip3 install pynostr psutil --break-system-packages
 ```
 
-## 4. Lancer la stack
+## 3. Déployer les fichiers de config
+
+Cloner ce dépôt et copier les fichiers à leur place :
 
 ```bash
-cd /opt/docker
-docker compose up -d
+git clone https://github.com/CedHaurus/relay-nostrmap.git /tmp/relay-cfg
+cd /tmp/relay-cfg
 
-# Vérifier
-docker compose ps
-docker logs strfry --tail 20
-docker logs caddy --tail 20
+# strfry
+mkdir -p /etc/strfry/monitor
+install -m 644 strfry.conf            /etc/strfry/strfry.conf
+install -m 755 policy.py              /etc/strfry/policy.py
+install -m 755 retention.sh           /etc/strfry/retention.sh
+install -m 755 update-blocklist.sh    /etc/strfry/update-blocklist.sh
+touch /etc/strfry/blocklist.txt        # alimentation manuelle, voir update-blocklist.sh
+install -m 755 monitor/monitor.py     /etc/strfry/monitor/monitor.py
+install -m 755 monitor/stats.py       /etc/strfry/monitor/stats.py
+install -m 600 monitor/keys.example.json /etc/strfry/monitor/keys.json
+# ⚠️ remplacer le contenu de /etc/strfry/monitor/keys.json par les vraies clés (voir section 7)
+
+# Caddy
+install -m 644 Caddyfile              /etc/caddy/Caddyfile
+
+# systemd
+install -m 644 systemd/strfry.service /etc/systemd/system/strfry.service
+mkdir -p /etc/systemd/system/strfry.service.d
+install -m 644 systemd/strfry.service.d-override.conf \
+                /etc/systemd/system/strfry.service.d/override.conf
+
+# Scripts
+install -m 750 scripts/server-backup.sh /usr/local/sbin/server-backup.sh
+
+# Système
+install -m 644 system/sysctl.d/99-relay.conf       /etc/sysctl.d/99-relay.conf
+install -m 644 system/fail2ban-jail.d/custom.conf   /etc/fail2ban/jail.d/custom.conf
+install -m 644 system/fail2ban-filter.d/caddy-bad-requests.conf \
+                                                    /etc/fail2ban/filter.d/caddy-bad-requests.conf
+install -m 644 system/sshd_config.d/99-hardening.conf /etc/ssh/sshd_config.d/99-hardening.conf
+install -m 644 system/logrotate.d/strfry-monitor    /etc/logrotate.d/strfry-monitor
+install -m 644 system/apt.conf.d/52unattended-upgrades-local \
+                                                    /etc/apt/apt.conf.d/52unattended-upgrades-local
+mkdir -p /etc/systemd/journald.conf.d
+install -m 644 system/journald.conf.d/limits.conf   /etc/systemd/journald.conf.d/limits.conf
+install -m 644 system/cron.d/server-backup          /etc/cron.d/server-backup
+
+# Crontab root (à éditer pour adapter chemins/horaires)
+crontab crontab-root.example
 ```
 
-## 5. Sécurité
+## 4. Adapter le Caddyfile et strfry.conf
 
-### UFW
+Dans `/etc/caddy/Caddyfile`, remplacer `relay.nostrmap.net` par votre domaine.
+
+Dans `/etc/strfry/strfry.conf`, remplacer dans le bloc `info { ... }` :
+- `name`, `description`, `contact`, `pubkey` par les valeurs de votre relay
+
+## 5. Configurer le firewall (UFW)
 
 ```bash
-apt install -y ufw
 ufw default deny incoming
-ufw allow ssh
+ufw default allow outgoing
+ufw allow 22/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
+ufw allow 443/udp   # HTTP/3 QUIC
 ufw enable
 ```
 
-### fail2ban
+## 6. Activer les services
 
 ```bash
-apt install -y fail2ban
+systemctl daemon-reload
+systemctl enable --now strfry caddy fail2ban
+systemctl reload ssh    # applique le drop-in 99-hardening.conf
+
+# ⚠️ Au PREMIER démarrage strfry, le garde-fou ExecStartPre bloquera car data.mdb n existe pas.
+# Importer un dump initial AVANT, ou désactiver temporairement l ExecStartPre. Voir RESTORE.md.
 ```
 
-Jail SSH dans `/etc/fail2ban/jail.d/sshd.conf` :
-```ini
-[sshd]
-enabled  = true
-maxretry = 5
-bantime  = 1h
-findtime = 10m
-```
+## 7. Configurer les clés Nostr du relay (monitor/stats)
 
-Jail Caddy dans `/etc/fail2ban/jail.d/caddy.conf` :
-```ini
-[caddy-bad-requests]
-enabled  = true
-port     = http,https
-filter   = caddy-bad-requests
-logpath  = /var/log/caddy/relay-access.log
-maxretry = 20
-bantime  = 1h
-findtime = 5m
-```
-
-Filter `/etc/fail2ban/filter.d/caddy-bad-requests.conf` :
-```ini
-[Definition]
-failregex = .*"remote_ip":"<HOST>".*"status":4[0-9]{2}.*
-```
-
-### iptables — protection DDoS légère
+`monitor.py` envoie des DM Nostr d'alerte ; `stats.py` publie un post quotidien.
 
 ```bash
-# Limite de connexions par IP
-iptables -A INPUT -p tcp --dport 443 -m connlimit --connlimit-above 50 -j REJECT
-
-# Rate limiting des nouvelles connexions
-iptables -A INPUT -p tcp --dport 443 -m state --state NEW \
-  -m hashlimit --hashlimit-above 20/min --hashlimit-burst 50 \
-  --hashlimit-mode srcip --hashlimit-name ws_limit -j DROP
-
-# Sauvegarder
-apt install -y iptables-persistent
-iptables-save > /etc/iptables/rules.v4
-```
-
-## 6. Anonymisation des IPs
-
-Par défaut Caddy logue les IPs complètes des clients. Pour un relay public respectueux de la vie privée, on peut les tronquer directement dans la config :
-
-```caddy
-log {
-    format filter {
-        wrap json
-        fields {
-            request>remote_ip ip_mask {
-                ipv4 24    # garde seulement x.x.x.0
-                ipv6 48    # garde seulement les 48 premiers bits
-            }
-            request>client_ip ip_mask {
-                ipv4 24
-                ipv6 48
-            }
-        }
-    }
-}
-```
-
-Le `Caddyfile` de ce dépôt inclut déjà cette configuration. Les logs ne contiennent jamais d'IP complète — impossible de retracer un utilisateur individuel.
-
-Pour désactiver complètement les logs :
-
-```caddy
-relay.votre-domaine.net {
-    reverse_proxy 127.0.0.1:7777
-    # pas de bloc log = aucun log d'accès
-}
-```
-
-## 7. Monitoring (optionnel)
-
-Le dossier `monitor/` contient un script Python :
-
-- `monitor.py` — envoie des rapports et alertes à l'opérateur
-
-### Installation
-
-```bash
-pip3 install pynostr --break-system-packages
-mkdir -p /etc/strfry/monitor
-cp monitor/monitor.py /etc/strfry/monitor/
-
-# Créer keys.json avec les clés Nostr du relay
-cat > /etc/strfry/monitor/keys.json << 'EOF'
-{
-  "npub_relay": "npub1...",
-  "nsec_relay": "nsec1...",
-  "npub_operator": "npub1..."
-}
-EOF
+nano /etc/strfry/monitor/keys.json
+# Format :
+# {
+#   "npub_relay": "npub1...",
+#   "nsec_relay": "nsec1...",     # clé privée du COMPTE qui poste les stats
+#   "npub_operator": "npub1..."   # ton npub perso, qui reçoit les DM d alerte
+# }
 chmod 600 /etc/strfry/monitor/keys.json
 ```
 
-### Crontab
+## 8. Configurer le backup restic (Cloudflare R2)
 
 ```bash
-# Rapport toutes les 12h
-0 */12 * * * /usr/bin/python3 /etc/strfry/monitor/monitor.py report >> /var/log/strfry-monitor.log 2>&1
+mkdir -p /etc/restic
+chmod 700 /etc/restic
 
-# Alertes toutes les 5 minutes
-*/5 * * * * /usr/bin/python3 /etc/strfry/monitor/monitor.py alert >> /var/log/strfry-monitor.log 2>&1
+# Mot de passe restic (à conserver HORS du serveur !)
+echo "<MOT_DE_PASSE_FORT>" > /etc/restic/password
+chmod 600 /etc/restic/password
+
+# Credentials R2
+cat > /etc/restic/r2.env <<'EOF'
+export RESTIC_REPOSITORY="s3:<endpoint>/<bucket>"
+export RESTIC_PASSWORD_FILE="/etc/restic/password"
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+EOF
+chmod 600 /etc/restic/r2.env
+
+# Initialiser le dépôt restic
+set -a; source /etc/restic/r2.env; set +a
+restic init
+
+# Lancer un backup manuel pour tester
+/usr/local/sbin/server-backup.sh
 ```
 
-## 8. Annoncer son relay
+## 9. Validation
 
-- [nostr.watch](https://nostr.watch) — annuaire de relays
-- [relay.tools](https://relay.tools) — listing communautaire
-- Publier un event NIP-65 (kind:10002) pour indiquer son relay dans son profil
+```bash
+# Service NIP-11 OK ?
+curl -sH "Accept: application/nostr+json" https://votre-domaine.net/ | python3 -m json.tool
 
----
+# Compter les events en DB
+/usr/local/bin/strfry --config /etc/strfry/strfry.conf scan '{}' 2>/dev/null | wc -l
 
-*Ce guide est basé sur l'infrastructure de relay.nostrmap.net.*
+# Tester le monitor
+python3 /etc/strfry/monitor/monitor.py alert
+```
+
+## Pièges connus
+
+- **Garde-fou `ExecStartPre`** : strfry refuse de démarrer si `data.mdb` est absent ou < 1 Mo. Pour bootstrap, importer un dump (cf. RESTORE.md) AVANT le premier `systemctl start`.
+- **Caddy `header_up X-Real-Ip`** : volontairement absent (anonymisation RGPD). strfry log toutes les connexions comme `127.0.0.1`. Ne pas l'ajouter sauf si tu veux désactiver l'anonymisation.
+- **Docker** : volontairement non utilisé. `systemctl mask docker` si nécessaire.
+- **`maxWebsocketPayloadSize`** ≠ **`events.maxEventSize`** : 2 paramètres distincts dans strfry.conf, à aligner pour permettre les events > 64 KiB.
+- **Rétention `retention.sh`** (5 ans) doit être cohérente avec `events.rejectEventsOlderThanSeconds` dans strfry.conf, sinon strfry rejette à l'écriture des events que retention aurait gardés en DB.
+
+## Références
+
+- strfry : https://github.com/hoytech/strfry
+- Caddy : https://caddyserver.com/
+- Nostr NIPs : https://github.com/nostr-protocol/nips

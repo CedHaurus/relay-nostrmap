@@ -1,0 +1,8 @@
+# Backup automatique vers Cloudflare R2 - serveur nostr-relay
+# 4h00 et 16h00 UTC (décalé de 1h vs autres VPS pour éviter la contention R2)
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=""
+
+0 4  * * * root /usr/local/sbin/server-backup.sh >> /var/log/server-backup.log 2>&1
+0 16 * * * root /usr/local/sbin/server-backup.sh >> /var/log/server-backup.log 2>&1
