@@ -224,27 +224,22 @@ def get_relay_runtime(state):
     return format_duration(time.time() - launch_ts)
 
 def get_uptime_pct():
-    """Uptime strfry sur 24h estime via journalctl.
+    """Uptime strfry sur 24h estime via systemd.
 
     Si strfry est down maintenant : 0%.
-    Sinon, on compte les redemarrages des dernieres 24h (un Started par restart)
-    et on estime un downtime de 5s par restart (RestartSec=5).
+    Sinon, on utilise le compteur de restarts systemd, beaucoup plus rapide que
+    scanner le journal complet de strfry, puis on estime 5s de downtime par
+    restart (RestartSec=5).
     """
     if not is_strfry_active():
         return 0.0
 
-    out = run(
-        "journalctl -u strfry --since '24h ago' --no-pager 2>/dev/null "
-        "| grep -c 'Started strfry.service'"
-    )
+    out = run("systemctl show strfry -p NRestarts --value 2>/dev/null")
     try:
-        nb_starts = int(out)
+        nb_restarts = int(out)
     except ValueError:
-        nb_starts = 0
+        nb_restarts = 0
 
-    # Le premier "Started" du jour est le start regulier ; les suivants sont des restarts.
-    nb_restarts = max(0, nb_starts - 1)
-    # RestartSec=5 dans le service ; 5s de downtime par restart est une bonne approximation.
     downtime = nb_restarts * 5
 
     uptime_pct = max(0.0, min(100.0, 100 - (downtime / 86400) * 100))
