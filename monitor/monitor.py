@@ -273,14 +273,30 @@ def get_reject_rate():
     return round(r / total * 100, 1)
 
 def get_top_pubkeys(n=5):
-    """Top N pubkeys actives sur 12h depuis les logs strfry."""
-    logs = run("journalctl -u strfry --since '12h ago' --no-pager 2>/dev/null")
+    """Top N pubkeys actives sur 12h via strfry export (streaming, sans charger les logs)."""
+    import subprocess, json, time
     from collections import Counter
-    import re
-    pubkeys = re.findall(r'pubkey["\s:]+([0-9a-f]{64})', logs)
-    if not pubkeys:
+    since_ts = int(time.time()) - 43200
+    cmd = ["/usr/local/bin/strfry", "--config", "/etc/strfry/strfry.conf",
+           "export", f"--since={since_ts}"]
+    counts = Counter()
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            try:
+                pk = json.loads(line).get("pubkey")
+                if pk:
+                    counts[pk] += 1
+            except Exception:
+                continue
+        proc.stdout.close()
+        proc.wait()
+    except Exception:
         return "—"
-    top = Counter(pubkeys).most_common(n)
+    if not counts:
+        return "—"
+    top = counts.most_common(n)
     return "\n".join(f"  {pk[:16]}… ({count})" for pk, count in top)
 
 def get_ssh_failures():
