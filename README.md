@@ -24,12 +24,12 @@ Ce relay fait partie du projet [nostrmap.fr](https://nostrmap.fr), une initiativ
 
 ## Stack technique
 
-- **[strfry](https://github.com/hoytech/strfry)** — relay Nostr haute performance (C++, LMDB)
+- **[strfry](https://github.com/hoytech/strfry) 1.1.0-77** — relay Nostr haute performance (C++, LMDB)
 - **[Caddy v2](https://caddyserver.com/)** — reverse proxy TLS automatique
 - **systemd** — orchestration native (Docker volontairement non utilisé depuis mai 2026)
 - **fail2ban** — protection brute-force SSH + scans web (3 jails : sshd, caddy-bad-requests, recidive)
 - **restic + Cloudflare R2** — backup automatique 2×/jour avec rétention 7d/4w/3m
-- **Python** — write policy, monitoring (alertes DM Nostr NIP-04, post stats quotidien)
+- **Python** — write policy, monitoring (alertes DM Nostr NIP-04, note stats quotidienne kind:1)
 
 ## Ce dépôt
 
