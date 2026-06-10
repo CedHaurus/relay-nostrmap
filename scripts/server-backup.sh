@@ -52,8 +52,11 @@ fi
 
 log "Export strfry OK ($EVENT_COUNT events, $SIZE)"
 ln -sf "$STRFRY_DUMP" "$STRFRY_DUMP_LATEST"
-# Garder les 5 derniers dumps locaux (restic garde l'historique distant)
-ls -1t "$DUMP_DIR"/strfry-export-*.jsonl.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+# Ne garder QUE le dump courant en local (restic a l'historique complet sur R2).
+# -type f pour exclure le symlink 'latest' du comptage.
+find "$DUMP_DIR" -maxdepth 1 -type f -name 'strfry-export-*.jsonl.gz' \
+    -printf '%T@ %p\0' 2>/dev/null \
+    | sort -zrn | tail -zn +2 | cut -z -d' ' -f2- | xargs -0r rm -f
 
 # ── 4. Backup restic ────────────────────────────────────────────────────────
 log "Lancement restic backup…"
