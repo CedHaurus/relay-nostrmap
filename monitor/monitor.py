@@ -10,6 +10,8 @@ import sys
 import json
 import time
 import subprocess
+import urllib.error
+import urllib.request
 import psutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ except ImportError:
 KEYS_FILE  = "/etc/strfry/monitor/keys.json"
 STATE_FILE = "/etc/strfry/monitor/state.json"
 LOG_FILE   = "/var/log/strfry-monitor.log"
+DISCORD_DEFAULT_USER_ID = ""  # renseigne sur le serveur ; sinon discord_user_id de keys.json
 
 # Relays pour envoyer les DMs (fallback si le relay principal est down)
 DM_RELAYS = [
@@ -41,7 +44,7 @@ CADDY_LOG   = "/var/log/caddy/relay-access.log"
 STRFRY_CONF = "/etc/strfry/strfry.conf"
 
 # Seuils d'alerte
-DISK_WARN        = 80
+DISK_WARN        = 88
 DISK_CRITICAL    = 90
 RAM_WARN         = 85
 CONN_WARN        = 500
@@ -108,6 +111,61 @@ def mark_alert_sent(state, key):
     state[f"alert_last_{key}"] = time.time()
 
 # ─── Envoi DM Nostr ───────────────────────────────────────────────────────────
+
+def _discord_color(level: str) -> int:
+    if level == "critical":
+        return 0xE5484D
+    if level == "warning":
+        return 0xF5A524
+    if level == "success":
+        return 0x30A46C
+    return 0x3B82F6
+
+def send_discord(message: str, keys: dict, title: str = "Nostr Map Relay", level: str = "info") -> bool:
+    webhook_url = keys.get("discord_webhook_url")
+    if not webhook_url:
+        log("ERREUR Discord: discord_webhook_url absent de keys.json")
+        return False
+
+    user_id = str(keys.get("discord_user_id") or DISCORD_DEFAULT_USER_ID)
+    mention = f"<@{user_id}>"
+    description = message if len(message) <= 3900 else message[:3890] + "\n[tronqué]"
+    payload = {
+        "content": mention,
+        "allowed_mentions": {"users": [user_id]},
+        "embeds": [{
+            "title": title,
+            "description": description,
+            "color": _discord_color(level),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "footer": {"text": "relay.nostrmap.net monitor"},
+        }],
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "nostrmap-relay-monitor/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ok = 200 <= resp.status < 300
+        if ok:
+            log(f"Discord envoyé: {title}")
+            return True
+        log(f"ERREUR Discord: HTTP {resp.status}")
+        return False
+    except urllib.error.HTTPError as e:
+        log(f"ERREUR Discord HTTP {e.code}: {e.reason}")
+        return False
+    except Exception as e:
+        log(f"ERREUR Discord: {e}")
+        return False
 
 def _ws_send_event(host: str, port: int, event_dict: dict, timeout: int = 8) -> bool:
     """Envoi bas niveau d'un event Nostr via WebSocket (sans dépendance RelayManager)."""
@@ -243,8 +301,10 @@ def get_connections():
         return 0
 
 def get_events_count():
-    """Nombre d'events dans la DB strfry (binaire local)."""
-    out = run("/usr/local/bin/strfry --config /etc/strfry/strfry.conf scan '{}' 2>/dev/null | wc -l")
+    """Nombre d'events en base. Utilise `scan --count` natif strfry : parcourt
+    l'index sans materialiser les events en JSONL (~4s vs 2-3 min avec
+    `scan | wc -l` quand la base depasse 1M events)."""
+    out = run("/usr/local/bin/strfry --config /etc/strfry/strfry.conf scan --count '{}' 2>/dev/null")
     try:
         return int(out)
     except ValueError:
@@ -425,45 +485,45 @@ def check_alerts(state, keys):
     # strfry down
     if not get_container_status("strfry") and cooldown_ok(state, "strfry_down"):
         logs = run("journalctl -u strfry --no-pager -n 20 2>&1")
-        send_dm(f"🚨 ALERTE : strfry est DOWN\n\nDerniers logs :\n{logs[-800:]}", keys)
+        send_discord(f"🚨 **ALERTE : strfry est DOWN**\n\n```text\n{logs[-800:]}\n```", keys, "strfry DOWN", "critical")
         mark_alert_sent(state, "strfry_down")
         alerts_sent += 1
 
     # Caddy down
     if not get_container_status("caddy") and cooldown_ok(state, "caddy_down"):
-        send_dm("🚨 ALERTE : Caddy est DOWN — relay inaccessible", keys)
+        send_discord("🚨 **ALERTE : Caddy est DOWN**\nLe relay est probablement inaccessible en public.", keys, "Caddy DOWN", "critical")
         mark_alert_sent(state, "caddy_down")
         alerts_sent += 1
 
     # Disque
     disk = get_disk()
     if disk["pct"] >= DISK_CRITICAL and cooldown_ok(state, "disk_crit"):
-        send_dm(f"🚨 DISQUE CRITIQUE : {disk['pct']}% ({disk['used_gb']}/{disk['total_gb']} GB)", keys)
+        send_discord(f"🚨 **DISQUE CRITIQUE**\nUtilisation : **{disk['pct']}%** ({disk['used_gb']}/{disk['total_gb']} GB)", keys, "Disque critique", "critical")
         mark_alert_sent(state, "disk_crit")
         alerts_sent += 1
     elif disk["pct"] >= DISK_WARN and cooldown_ok(state, "disk_warn"):
-        send_dm(f"⚠️ Disque à {disk['pct']}% ({disk['used_gb']}/{disk['total_gb']} GB)", keys)
+        send_discord(f"⚠️ **Disque élevé**\nUtilisation : **{disk['pct']}%** ({disk['used_gb']}/{disk['total_gb']} GB)", keys, "Disque élevé", "warning")
         mark_alert_sent(state, "disk_warn")
         alerts_sent += 1
 
     # RAM
     ram = get_ram()
     if ram["pct"] >= RAM_WARN and cooldown_ok(state, "ram_warn"):
-        send_dm(f"⚠️ RAM à {ram['pct']}% ({ram['used_gb']}/{ram['total_gb']} GB)", keys)
+        send_discord(f"⚠️ **RAM élevée**\nUtilisation : **{ram['pct']}%** ({ram['used_gb']}/{ram['total_gb']} GB)", keys, "RAM élevée", "warning")
         mark_alert_sent(state, "ram_warn")
         alerts_sent += 1
 
     # Connexions flood
     conns = get_connections()
     if conns >= CONN_WARN and cooldown_ok(state, "conn_warn"):
-        send_dm(f"⚠️ {conns} connexions simultanées — possible flood", keys)
+        send_discord(f"⚠️ **Connexions élevées**\n{conns} connexions simultanées sur 443. Possible flood.", keys, "Connexions élevées", "warning")
         mark_alert_sent(state, "conn_warn")
         alerts_sent += 1
 
     # Taux de rejet
     rejects = get_reject_rate()
     if rejects >= REJECT_RATE_WARN and cooldown_ok(state, "reject_warn"):
-        send_dm(f"⚠️ Taux de rejet {rejects}% — vérifier policy.py", keys)
+        send_discord(f"⚠️ **Taux de rejet élevé**\nRejets sur 1h : **{rejects}%**.\nÀ vérifier : `policy.py`, timestamps futurs, spam ou rate-limit.", keys, "Taux de rejet élevé", "warning")
         mark_alert_sent(state, "reject_warn")
         alerts_sent += 1
 
@@ -472,7 +532,7 @@ def check_alerts(state, keys):
     events_last = state.get("events_last", 0)
     if events_last > 0 and events_now > events_last * FLOOD_MULTIPLIER and cooldown_ok(state, "flood"):
         delta = events_now - events_last
-        send_dm(f"⚠️ Flood détecté — +{delta} events depuis le dernier rapport", keys)
+        send_discord(f"⚠️ **Flood détecté**\n+{delta} events depuis le dernier rapport.", keys, "Flood d'events", "warning")
         mark_alert_sent(state, "flood")
         alerts_sent += 1
 
@@ -486,7 +546,7 @@ def check_alerts(state, keys):
         starts_1h = 0
     if starts_1h >= 1 and cooldown_ok(state, "restarts"):
         logs = run("journalctl -u strfry --no-pager -n 15 2>&1")
-        send_dm(f"⚠️ strfry a redémarré {starts_1h} fois sur la dernière heure\n\nDerniers logs :\n{logs[-500:]}", keys)
+        send_discord(f"⚠️ **Redémarrage strfry**\n{starts_1h} redémarrage(s) sur la dernière heure.\n\n```text\n{logs[-500:]}\n```", keys, "Redémarrage strfry", "warning")
         mark_alert_sent(state, "restarts")
         alerts_sent += 1
 
@@ -498,21 +558,21 @@ def check_alerts(state, keys):
     except ValueError:
         oom_count = 0
     if oom_count > 0 and cooldown_ok(state, "oom"):
-        send_dm(f"🚨 OOM-KILL : strfry a été tué par le kernel {oom_count} fois sur 15 min.\nLa RAM systeme est saturee. Verifier MemoryHigh/MemoryMax + swap.", keys)
+        send_discord(f"🚨 **OOM-KILL**\nstrfry a été tué par le kernel {oom_count} fois sur 15 min.\nVérifier `MemoryHigh` / `MemoryMax` + swap.", keys, "OOM-KILL strfry", "critical")
         mark_alert_sent(state, "oom")
         alerts_sent += 1
 
     # TLS expiration
     tls_days = get_tls_expiry()
     if 0 < tls_days < 14 and cooldown_ok(state, "tls_warn"):
-        send_dm(f"⚠️ Certificat TLS expire dans {tls_days} jours — vérifier Caddy", keys)
+        send_discord(f"⚠️ **Certificat TLS proche expiration**\nExpire dans {tls_days} jours. Vérifier Caddy.", keys, "TLS à surveiller", "warning")
         mark_alert_sent(state, "tls_warn")
         alerts_sent += 1
 
     # Brute force SSH
     ssh_fail = get_ssh_failures()
     if ssh_fail >= SSH_BRUTE_WARN and cooldown_ok(state, "ssh_brute"):
-        send_dm(f"🚨 {ssh_fail} tentatives SSH échouées en 1h — brute force en cours", keys)
+        send_discord(f"🚨 **Brute force SSH possible**\n{ssh_fail} tentatives SSH échouées en 1h.", keys, "Brute force SSH", "critical")
         mark_alert_sent(state, "ssh_brute")
         alerts_sent += 1
 
@@ -522,27 +582,31 @@ def check_alerts(state, keys):
         recent_inserts = get_recent_inserts(window_minutes=15)
         conns = get_connections()
         if recent_inserts == 0 and conns == 0 and cooldown_ok(state, "isolated"):
-            send_dm(
-                "🚨 RELAY ISOLE : strfry actif mais 0 events reçus et 0 connexions "
-                "sur 15 min. Verifier DNS, firewall, route reseau, IP non bannie ailleurs.",
+            send_discord(
+                "🚨 **RELAY ISOLÉ**\nstrfry est actif mais il y a 0 event reçu et 0 connexion "
+                "sur 15 min. Vérifier DNS, firewall, route réseau, IP non bannie ailleurs.",
                 keys,
+                "Relay isolé",
+                "critical",
             )
             mark_alert_sent(state, "isolated")
             alerts_sent += 1
 
     # fail2ban down
     if not get_container_status("fail2ban") and cooldown_ok(state, "fail2ban"):
-        send_dm("⚠️ fail2ban est DOWN — protection brute-force inactive", keys)
+        send_discord("⚠️ **fail2ban est DOWN**\nLa protection brute-force est inactive.", keys, "fail2ban DOWN", "warning")
         mark_alert_sent(state, "fail2ban")
         alerts_sent += 1
 
     # Backup vieillissant : pas de "FIN BACKUP OK" depuis > 25h
     backup_age, backup_ok = get_last_backup_status()
     if backup_ok and backup_age > 25 and cooldown_ok(state, "backup"):
-        send_dm(
-            f"⚠️ Aucun backup réussi depuis {backup_age}h. "
-            f"Verifier /var/log/server-backup.log et le cron /etc/cron.d/server-backup.",
+        send_discord(
+            f"⚠️ **Backup vieillissant**\nAucun backup réussi depuis {backup_age}h.\n"
+            f"Vérifier `/var/log/server-backup.log` et le cron `/etc/cron.d/server-backup`.",
             keys,
+            "Backup à vérifier",
+            "warning",
         )
         mark_alert_sent(state, "backup")
         alerts_sent += 1
@@ -579,16 +643,16 @@ def main():
 
     if mode == "test":
         # Envoie un DM de test sans toucher à l'état
-        msg = f"🔧 Test monitoring relay.nostrmap.net\n{now_str()}\nSi tu reçois ce message, le système fonctionne."
-        ok = send_dm(msg, keys)
-        print("DM test envoyé ✅" if ok else "Échec envoi DM ❌ — voir /var/log/strfry-monitor.log")
+        msg = f"🔧 **Test monitoring relay.nostrmap.net**\n{now_str()}\nSi tu reçois ce message, le webhook Discord fonctionne."
+        ok = send_discord(msg, keys, "Test monitoring", "success")
+        print("Discord test envoyé ✅" if ok else "Échec envoi Discord ❌ — voir /var/log/strfry-monitor.log")
 
     elif mode == "report":
         msg, new_state = build_report(state)
         state.update(new_state)
         save_state(state)
-        ok = send_dm(msg, keys)
-        print("Rapport envoyé ✅" if ok else "Échec envoi ❌")
+        ok = send_discord(msg, keys, "Synthèse relay Nostr Map", "info")
+        print("Rapport Discord envoyé ✅" if ok else "Échec envoi Discord ❌")
         print(msg)
 
     elif mode == "alert":

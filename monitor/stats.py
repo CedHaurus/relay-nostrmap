@@ -143,27 +143,23 @@ def _ws_publish(host: str, event_dict: dict, timeout: int = 8) -> bool:
 
 # ─── Collecte des métriques ───────────────────────────────────────────────────
 
-def get_events_last_24h():
-    """Events stockés dans les 24 dernières heures (lecture directe DB strfry)."""
+def collect_24h_stats():
+    """Un seul scan strfry, calcule en streaming : nombre d'events, pubkeys
+    distinctes vues, pubkeys distinctes actives (activité humaine).
+    Materialiser la liste complete saturait la RAM en periode de flood 1059."""
     since_ts = int(time.time()) - 86400
-    return sum(1 for _ in iter_events_since(since_ts))
-
-def get_events_24h():
-    """Events stockés dans les 24 dernières heures (lecture directe DB strfry)."""
-    since_ts = int(time.time()) - 86400
-    return list(iter_events_since(since_ts))
-
-def count_seen_pubkeys(events):
-    """Pubkeys distinctes vues dans les events reçus."""
-    return len({event.get("pubkey") for event in events if event.get("pubkey")})
-
-def count_human_active_pubkeys(events):
-    """Pubkeys distinctes ayant publié au moins un event d'activité humaine."""
-    return len({
-        event.get("pubkey")
-        for event in events
-        if event.get("pubkey") and event.get("kind") in HUMAN_ACTIVITY_KINDS
-    })
+    count = 0
+    seen = set()
+    active = set()
+    for event in iter_events_since(since_ts):
+        count += 1
+        pk = event.get("pubkey")
+        if not pk:
+            continue
+        seen.add(pk)
+        if event.get("kind") in HUMAN_ACTIVITY_KINDS:
+            active.add(pk)
+    return count, len(seen), len(active)
 
 def format_duration(seconds):
     """Durée lisible, limitée aux jours/heures/minutes."""
@@ -223,32 +219,85 @@ def get_relay_runtime(state):
 
     return format_duration(time.time() - launch_ts)
 
-def get_uptime_pct():
-    """Uptime strfry sur 24h estime via systemd.
+def _active_since_ts():
+    """Timestamp Unix du début du streak actif courant de strfry (ou None)."""
+    raw = run(
+        'date -d "$(systemctl show strfry -p ActiveEnterTimestamp --value)" +%s 2>/dev/null'
+    )
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
-    Si strfry est down maintenant : 0%.
-    Sinon, on utilise le compteur de restarts systemd, beaucoup plus rapide que
-    scanner le journal complet de strfry, puis on estime 5s de downtime par
-    restart (RestartSec=5).
+def get_uptime_pct():
+    """Uptime strfry réel sur la fenêtre 24h glissante.
+
+    Mesuré via les transitions d'état systemd, et NON via un compteur cumulatif
+    (NRestarts), qui n'a aucun rapport avec les dernières 24h et restait figé.
+
+    - strfry down maintenant : 0%.
+    - actif sans interruption depuis avant la fenêtre : 100% (cas courant, aucun
+      parsing de journal nécessaire).
+    - sinon (≥1 redémarrage dans la fenêtre) : on somme le downtime réel à partir
+      des transitions Started/Stopped du journal systemd.
     """
     if not is_strfry_active():
         return 0.0
 
-    out = run("systemctl show strfry -p NRestarts --value 2>/dev/null")
-    try:
-        nb_restarts = int(out)
-    except ValueError:
-        nb_restarts = 0
+    window = 86400
+    now = int(time.time())
+    win_start = now - window
 
-    downtime = nb_restarts * 5
+    # Cas courant : streak actif démarré avant la fenêtre → 100% sur 24h.
+    active_since = _active_since_ts()
+    if active_since is not None and active_since <= win_start:
+        return 100.0
 
-    uptime_pct = max(0.0, min(100.0, 100 - (downtime / 86400) * 100))
+    # Sinon : au moins une transition dans la fenêtre. On reconstruit la
+    # timeline à partir des messages systemd (et non des logs applicatifs).
+    out = run(
+        'journalctl -u strfry --since "24 hours ago" -o short-unix --no-pager 2>/dev/null'
+    )
+    transitions = []
+    for line in out.splitlines():
+        if "systemd[" not in line:  # ignore le stdout applicatif de strfry
+            continue
+        try:
+            ts = int(float(line.split(maxsplit=1)[0]))
+        except (ValueError, IndexError):
+            continue
+        if ts < win_start:
+            continue
+        low = line.lower()
+        if "started strfry" in low:
+            transitions.append((ts, "up"))
+        elif any(k in low for k in (
+            "stopped strfry", "failed", "main process exited", "deactivated",
+        )):
+            transitions.append((ts, "down"))
+    transitions.sort()
+
+    # État au début de fenêtre, inféré de la 1re transition observée.
+    state = "down" if (transitions and transitions[0][1] == "up") else "up"
+    last_ts = win_start
+    downtime = 0
+    for ts, ev in transitions:
+        if state == "down":
+            downtime += ts - last_ts
+        state = ev
+        last_ts = ts
+    if state == "down":  # ne devrait pas arriver : strfry est actif maintenant
+        downtime += now - last_ts
+
+    uptime_pct = max(0.0, min(100.0, 100 - (downtime / window) * 100))
     return round(uptime_pct, 2)
 
 def get_total_events():
-    """Nombre total d'events dans la DB (binaire strfry natif)."""
+    """Nombre total d'events en base. Utilise `scan --count` natif strfry :
+    parcourt l'index sans materialiser les events en JSONL (3-4s pour 1.4M
+    events au lieu de 2-3 min avec `scan | wc -l`)."""
     out = run(
-        "/usr/local/bin/strfry --config /etc/strfry/strfry.conf scan '{}' 2>/dev/null | wc -l"
+        "/usr/local/bin/strfry --config /etc/strfry/strfry.conf scan --count '{}' 2>/dev/null"
     )
     try:
         return int(out)
@@ -318,10 +367,7 @@ def main():
     state = load_state()
     had_launch_date = "relay_launch_date" in state
 
-    events       = get_events_24h()
-    events_24h   = len(events)
-    seen_pubkeys_24h = count_seen_pubkeys(events)
-    active_pubkeys_24h = count_human_active_pubkeys(events)
+    events_24h, seen_pubkeys_24h, active_pubkeys_24h = collect_24h_stats()
     uptime       = get_uptime_pct()
     runtime      = get_relay_runtime(state)
     total_events = get_total_events()

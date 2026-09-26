@@ -15,7 +15,8 @@ Ce relay fait partie du projet [nostrmap.fr](https://nostrmap.fr), une initiativ
 - Filtrage anti-spam par politique (write policy Python : rate-limit 30/min/pubkey, sanity checks taille/tags/horloge, blocklist locale)
 - Compression WebSocket activée (permessage-deflate)
 - TLS via Caddy (certificat Let's Encrypt automatique)
-- Rétention 5 ans (purge automatique au-delà)
+- Rétention 5 ans (purge automatique au-delà) ; gift wraps NIP-59 (kind 1059) : 30 jours
+- NIP-42 : les messages privés (kinds 4 et 1059) ne sont servis qu'à leur auteur ou destinataire authentifié
 - **Pas de logs d'IP** — adresses IP anonymisées /24 (IPv4) ou /48 (IPv6) dans les logs Caddy, et strfry voit toutes les connexions comme 127.0.0.1
 
 ## Contact
@@ -29,7 +30,7 @@ Ce relay fait partie du projet [nostrmap.fr](https://nostrmap.fr), une initiativ
 - **systemd** — orchestration native (Docker volontairement non utilisé depuis mai 2026)
 - **fail2ban** — protection brute-force SSH + scans web (3 jails : sshd, caddy-bad-requests, recidive)
 - **restic + Cloudflare R2** — backup automatique 2×/jour avec rétention 7d/4w/3m
-- **Python** — write policy, monitoring (alertes DM Nostr NIP-04, note stats quotidienne kind:1)
+- **Python** — write policy, monitoring (alertes et synthèses via webhook Discord, note stats quotidienne kind:1)
 
 ## Ce dépôt
 

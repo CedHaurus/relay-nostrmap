@@ -1,10 +1,52 @@
 relay.nostrmap.net {
     encode gzip zstd
 
-    reverse_proxy 127.0.0.1:7777
+    handle /icon.png {
+        root * /var/www/relay-nostrmap
+        file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:7777
+    }
 
     log {
         output file /var/log/caddy/relay-access.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+        format filter {
+            wrap json
+            fields {
+                request>remote_ip ip_mask {
+                    ipv4 24
+                    ipv6 48
+                }
+                request>client_ip ip_mask {
+                    ipv4 24
+                    ipv6 48
+                }
+            }
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "interest-cohort=()"
+        -Server
+    }
+}
+
+simplex.nostrmap.fr {
+    encode gzip zstd
+
+    root * /var/www/simplex.nostrmap.fr
+    file_server
+
+    log {
+        output file /var/log/caddy/simplex-access.log {
             roll_size 100mb
             roll_keep 5
         }

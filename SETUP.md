@@ -113,9 +113,9 @@ systemctl reload ssh    # applique le drop-in 99-hardening.conf
 # Importer un dump initial AVANT, ou désactiver temporairement l ExecStartPre. Voir RESTORE.md.
 ```
 
-## 7. Configurer les clés Nostr du relay (monitor/stats)
+## 7. Configurer les clés du relay (monitor/stats)
 
-`monitor.py` envoie des DM Nostr d'alerte ; `stats.py` publie un post quotidien.
+`monitor.py` envoie ses alertes et synthèses sur un webhook Discord ; `stats.py` publie un post quotidien.
 
 ```bash
 nano /etc/strfry/monitor/keys.json
@@ -123,7 +123,9 @@ nano /etc/strfry/monitor/keys.json
 # {
 #   "npub_relay": "npub1...",
 #   "nsec_relay": "nsec1...",     # clé privée du COMPTE qui poste les stats
-#   "npub_operator": "npub1..."   # ton npub perso, qui reçoit les DM d alerte
+#   "npub_operator": "npub1...",  # ton npub perso
+#   "discord_webhook_url": "https://discord.com/api/webhooks/...",  # alertes monitor.py
+#   "discord_user_id": "..."      # compte Discord mentionné dans les alertes
 # }
 chmod 600 /etc/strfry/monitor/keys.json
 ```

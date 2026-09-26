@@ -5,6 +5,9 @@ strfry write policy plugin
   postant un thread + reactions tape facilement >10/min)
 - Blocklist locale alimentée à la main (sources publiques mortes en 2026-05)
 - Sanity-check basique sur taille content / nb tags / timestamp futur
+- Rejet des gift wraps (kind 1059) adressés à certains destinataires (flood
+  Nymchat wide-fanout, cf JOURNAL central 2026-06-10 — les auteurs sont des
+  clés éphémères, seul le p-tag destinataire est filtrable)
 """
 import sys, json, time
 from collections import defaultdict
@@ -18,6 +21,12 @@ RATE_WINDOW = 60       # par fenêtre (secondes)
 MAX_CONTENT_BYTES = 102400   # 100 KiB pour event content
 MAX_TAGS = 2000              # garde-fou tag bombs
 MAX_FUTURE_DRIFT = 900       # 15 min : timestamps futurs
+
+# Gift wraps (kind 1059) rejetés si adressés à ces pubkeys
+BLOCKED_GIFTWRAP_RECIPIENTS = {
+    # Pubkeys hex des destinataires concernes : renseignees sur le serveur,
+    # non publiees ici.
+}
 
 # Blocklist — rechargée depuis /etc/strfry/blocklist.txt
 def load_blocklist():
@@ -57,6 +66,14 @@ def check(event):
     if pubkey in blocklist:
         return False, "blocked: pubkey on blocklist"
 
+    # Gift wraps vers destinataires bloqués — shadowReject : le client émetteur
+    # reçoit un OK=true (indétectable), mais rien n'est stocké
+    if event.get('kind') == 1059:
+        for t in event.get('tags', []):
+            if isinstance(t, list) and len(t) > 1 and t[0] == 'p' \
+                    and t[1] in BLOCKED_GIFTWRAP_RECIPIENTS:
+                return 'shadow', ""
+
     # Sanity checks applicatifs (tag bombs, content overflow, horloge future)
     content = event.get('content', '')
     if isinstance(content, str) and len(content.encode('utf-8', errors='ignore')) > MAX_CONTENT_BYTES:
@@ -89,9 +106,15 @@ for line in sys.stdin:
         req = json.loads(line)
         event = req.get('event', {})
         accepted, reason = check(event)
+        if accepted == 'shadow':
+            action = "shadowReject"
+        elif accepted:
+            action = "accept"
+        else:
+            action = "reject"
         result = {
             "id": event.get("id", ""),
-            "action": "accept" if accepted else "reject",
+            "action": action,
             "msg": reason
         }
         print(json.dumps(result), flush=True)

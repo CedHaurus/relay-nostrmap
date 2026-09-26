@@ -8,3 +8,15 @@
     notifempty
     copytruncate
 }
+
+/var/log/relay-hourly.tsv {
+    su root adm
+    monthly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+

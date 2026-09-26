@@ -1,5 +1,7 @@
 {
   "npub_relay": "npub1...",
   "nsec_relay": "nsec1...",
-  "npub_operator": "npub1..."
+  "npub_operator": "npub1...",
+  "discord_webhook_url": "https://discord.com/api/webhooks/...",
+  "discord_user_id": "..."
 }

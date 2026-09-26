@@ -28,20 +28,25 @@ chmod 700 "$DUMP_DIR"
 # ── 3. Export strfry (LMDB → JSON) ─────────────────────────────────────────
 # Utilise le binaire natif (stack systemd, plus de Docker depuis 2026-05-02).
 # strfry export est non-bloquant et coherent meme pendant que strfry tourne.
-STRFRY_DUMP="$DUMP_DIR/strfry-export-$TIMESTAMP.jsonl.gz"
-STRFRY_DUMP_LATEST="$DUMP_DIR/strfry-export-latest.jsonl.gz"
+# NE PAS compresser ici. Un flux gzip differe integralement des le premier octet
+# modifie : le chunker CDC de restic ne retrouve aucun bloc commun et chaque run
+# reecrit tout le dump en blobs neufs (23 Go/run, depot R2 monte a 291 Go,
+# ratio de compression 1.00x). Non compresse, restic deduplique les events
+# inchanges et compresse lui-meme en zstd. Cf JOURNAL-IA 2026-07-18.
+STRFRY_DUMP="$DUMP_DIR/strfry-export-$TIMESTAMP.jsonl"
+STRFRY_DUMP_LATEST="$DUMP_DIR/strfry-export-latest.jsonl"
 MIN_EVENTS=1000   # seuil sanity-check : un dump avec moins d'events que ca est suspect
 
 log "Export strfry LMDB → $STRFRY_DUMP"
 /usr/local/bin/strfry --config /etc/strfry/strfry.conf export 2>>"$LOG_FILE" \
-    | gzip -9 > "$STRFRY_DUMP" || true
+    > "$STRFRY_DUMP" || true
 
 if [ ! -s "$STRFRY_DUMP" ]; then
     rm -f "$STRFRY_DUMP"
     die "Export strfry a produit un fichier vide. Symlink 'latest' NON modifie. Verifier strfry et /etc/strfry/strfry.conf."
 fi
 
-EVENT_COUNT=$(zcat "$STRFRY_DUMP" | wc -l)
+EVENT_COUNT=$(wc -l < "$STRFRY_DUMP")
 SIZE_BYTES=$(stat -c %s "$STRFRY_DUMP")
 SIZE=$(numfmt --to=iec --suffix=B "$SIZE_BYTES")
 
@@ -54,7 +59,7 @@ log "Export strfry OK ($EVENT_COUNT events, $SIZE)"
 ln -sf "$STRFRY_DUMP" "$STRFRY_DUMP_LATEST"
 # Ne garder QUE le dump courant en local (restic a l'historique complet sur R2).
 # -type f pour exclure le symlink 'latest' du comptage.
-find "$DUMP_DIR" -maxdepth 1 -type f -name 'strfry-export-*.jsonl.gz' \
+find "$DUMP_DIR" -maxdepth 1 -type f -name 'strfry-export-*.jsonl' \
     -printf '%T@ %p\0' 2>/dev/null \
     | sort -zrn | tail -zn +2 | cut -z -d' ' -f2- | xargs -0r rm -f
 
@@ -67,6 +72,8 @@ restic backup \
     --tag "nostr-relay" \
     \
     /etc \
+    /var/opt/simplex \
+    /var/opt/simplex-xftp \
     /root \
     "$DUMP_DIR" \
     \
